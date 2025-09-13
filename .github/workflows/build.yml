@@ -82,6 +82,59 @@ jobs:
         name: muovi-lsl-interface-${{ matrix.target }}
         path: artifacts/*
 
+  docs:
+    name: Build and Deploy Documentation
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install Homebrew
+      run: |
+        /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+        echo "/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin" >> $GITHUB_PATH
+        echo "HOMEBREW_PREFIX=/home/linuxbrew/.linuxbrew" >> $GITHUB_ENV
+
+    - name: Install build dependencies
+      run: |
+        brew install cmake pkg-config
+        echo "PKG_CONFIG_PATH=$(brew --prefix)/lib/pkgconfig:$PKG_CONFIG_PATH" >> $GITHUB_ENV
+
+    - name: Cache cargo dependencies
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-doc-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Build documentation
+      run: cargo doc --no-deps --document-private-items
+
+    - name: Create redirect for GitHub Pages
+      run: |
+        echo '<meta http-equiv="refresh" content="0; url=muovi_lsl_interface/">' > target/doc/index.html
+
+    - name: Setup Pages
+      uses: actions/configure-pages@v5
+
+    - name: Upload documentation
+      uses: actions/upload-pages-artifact@v3
+      with:
+        path: target/doc
+
+    - name: Deploy to GitHub Pages
+      uses: actions/deploy-pages@v4
+
   release:
     name: Create Release
     needs: build

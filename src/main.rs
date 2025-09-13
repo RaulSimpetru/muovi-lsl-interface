@@ -17,7 +17,7 @@
 //! via single-byte commands sent over the TCP connection.
 //!
 //! For complete device documentation and specifications, see:
-//! https://otbioelettronica.it/en/download/#55-171-wpfd-muovi
+//! <https://otbioelettronica.it/en/download/#55-171-wpfd-muovi>
 
 use byteorder::{BigEndian, ReadBytesExt};
 use chrono::Datelike;
