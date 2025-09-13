@@ -1,0 +1,108 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  release:
+    types: [ created ]
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            exe_suffix: .exe
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            exe_suffix: ""
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            exe_suffix: ""
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            exe_suffix: ""
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ matrix.target }}
+
+    - name: Install liblsl (macOS)
+      if: matrix.os == 'macos-latest'
+      run: |
+        brew install labstreaminglayer/tap/lsl pkg-config
+        # Set library paths for macOS
+        echo "DYLD_LIBRARY_PATH=$(brew --prefix)/lib:$DYLD_LIBRARY_PATH" >> $GITHUB_ENV
+        echo "PKG_CONFIG_PATH=$(brew --prefix)/lib/pkgconfig:$PKG_CONFIG_PATH" >> $GITHUB_ENV
+        echo "LSL_LIBRARY_PATH=$(brew --prefix)/lib" >> $GITHUB_ENV
+        echo "LSL_INCLUDE_PATH=$(brew --prefix)/include" >> $GITHUB_ENV
+
+    - name: Install liblsl (Linux)
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y wget pkg-config
+        # Download and install liblsl from GitHub releases
+        wget https://github.com/sccn/liblsl/releases/download/v1.16.2/liblsl-1.16.2-focal_amd64.deb
+        sudo dpkg -i liblsl-1.16.2-focal_amd64.deb
+        # Set library path
+        echo "LD_LIBRARY_PATH=/usr/lib:$LD_LIBRARY_PATH" >> $GITHUB_ENV
+        echo "PKG_CONFIG_PATH=/usr/lib/pkgconfig:$PKG_CONFIG_PATH" >> $GITHUB_ENV
+        echo "LSL_LIBRARY_PATH=/usr/lib" >> $GITHUB_ENV
+        echo "LSL_INCLUDE_PATH=/usr/include" >> $GITHUB_ENV
+
+    - name: Cache cargo dependencies
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Build
+      run: cargo build --release --target ${{ matrix.target }}
+
+    - name: Create artifact directory
+      run: mkdir artifacts
+
+    - name: Copy binary (Windows)
+      if: matrix.os == 'windows-latest'
+      run: copy target\${{ matrix.target }}\release\muovi-lsl-interface.exe artifacts\muovi-lsl-interface-${{ matrix.target }}.exe
+
+    - name: Copy binary (Unix)
+      if: matrix.os != 'windows-latest'
+      run: cp target/${{ matrix.target }}/release/muovi-lsl-interface artifacts/muovi-lsl-interface-${{ matrix.target }}
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: muovi-lsl-interface-${{ matrix.target }}
+        path: artifacts/*
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release'
+
+    steps:
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+
+    - name: Upload to release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: |
+          **/muovi-lsl-interface-*
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

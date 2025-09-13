@@ -1,0 +1,21 @@
+[package]
+name = "muovi-lsl-interface"
+version = "1.0.0"
+edition = "2024"
+authors = ["Raul C. Sîmpetru <raul.simpetru@fau.de>"]
+description = "Muovi EMG device LSL interface for research applications"
+license = "GPL-3.0"
+keywords = ["emg", "lsl", "muovi", "biomedical", "research"]
+categories = ["science"]
+
+[[bin]]
+name = "muovi-lsl-interface"
+path = "src/main.rs"
+
+[dependencies]
+lsl = "0.1.1"
+socket2 = "0.6.0"
+byteorder = "1.5"
+thiserror = "1.0"
+clap = { version = "4.5.47", features = ["derive"] }
+chrono = "0.4"
