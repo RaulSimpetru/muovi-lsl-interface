@@ -245,8 +245,7 @@ dependencies = [
 [[package]]
 name = "lsl-sys"
 version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "746a27be6e9798d1baa58033d391b62190e9f6def7fca082362942ae114bfda6"
+source = "git+https://github.com/labstreaminglayer/liblsl-rust.git#afa1d251674591c11ebc06070de60914b6dafccf"
 dependencies = [
  "cmake",
 ]
