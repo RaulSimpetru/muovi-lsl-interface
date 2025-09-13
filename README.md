@@ -29,7 +29,7 @@ Link to device: [OT Bioelettronica Muovi](https://otbioelettronica.it/en/muovi/)
 
 ```bash
 git clone <repository-url>
-cd lsl_muovi
+cd muovi-lsl-interface
 cargo build --release
 ```
 
@@ -40,7 +40,7 @@ The binary will be available at `target/release/muovi-streamer`.
 ### Basic usage
 
 ```bash
-./muovi-streamer
+./muovi-lsl-interface
 ```
 
 ### Command-line options
@@ -61,19 +61,19 @@ The binary will be available at `target/release/muovi-streamer`.
 **Standard EMG recording:**
 
 ```bash
-./muovi-streamer
+./muovi-lsl-interface
 ```
 
 **Test mode for development:**
 
 ```bash
-./muovi-streamer --test-mode
+./muovi-lsl-interface --test-mode
 ```
 
 **Raw ADC values for custom processing:**
 
 ```bash
-./muovi-streamer --no-conversion
+./muovi-lsl-interface --no-conversion
 ```
 
 ## LSL Integration
@@ -110,7 +110,7 @@ This project is developed for research purposes. For issues or contributions, pl
 
 ## License
 
-This project is licensed under the GPL-3.0 License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the GPL-3.0 License - see the [LICENSE](LICENSE.md) file for details.
 
 ## Author
 
