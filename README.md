@@ -1,4 +1,4 @@
-# Muovi LSL Streamer
+# Muovi LSL Interface
 
 A Rust-based TCP server that connects to OT Bioelettronica Muovi EMG devices and streams real-time data via Lab Streaming Layer (LSL) for research applications.
 
