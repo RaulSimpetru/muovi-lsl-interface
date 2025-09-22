@@ -5,9 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2025-09-22
+
+### Fixed
+
+- **Individual sample timestamps**: Fixed timestamp assignment to properly reflect the temporal structure of the data
+  - Each of the 18 samples in a chunk now receives its correct acquisition timestamp
+  - Samples are spaced 0.5ms apart (1/2000 Hz) with the oldest sample receiving the earliest timestamp
+  - Replaced single timestamp per chunk with individual timestamps for accurate temporal representation
+- **Optimized data transmission**: Switched from individual sample pushing to batch chunk transmission
+  - Uses `push_chunk_stamped_ex()` for more efficient network transmission
+  - Maintains proper timestamp precision while improving performance
+  - Reduces network overhead and improves real-time streaming characteristics
+
+### Technical Details
+
+- Sample timing calculation: `timestamp - (17 - sample_idx) * 0.0005` seconds
+- Chunk-based transmission preserves temporal accuracy while optimizing network efficiency
+- Compatible with existing LSL analysis tools expecting proper temporal sampling
+
 ## [1.0.0] - 2025-09-13
 
 ### Added
+
 - **Initial release** of Muovi LSL Streamer for research applications
 - **TCP server implementation** for OT Bioelettronica Muovi EMG device communication
 - **Real-time data streaming** via Lab Streaming Layer (LSL) protocol
