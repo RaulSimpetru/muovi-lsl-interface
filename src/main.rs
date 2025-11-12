@@ -385,31 +385,27 @@ impl MuoviReader {
                     // Reshape and convert data with individual timestamps
                     // At 2kHz sampling rate, each sample is 0.5ms apart (1/2000 = 0.0005 seconds)
                     let sample_interval = 1.0 / 2000.0;
-                    
+
+                    macro_rules! process_chunk {
+                        ($value_type:ty, $convert_fn:ident) => {{
+                            let mut chunk: Vec<Vec<$value_type>> = Vec::with_capacity(18);
+                            let mut timestamps: Vec<f64> = Vec::with_capacity(18);
+                            for sample_idx in 0..18 {
+                                let sample_start = sample_idx * 38;
+                                let sample_end = sample_start + 38;
+                                let sample_data = &raw_samples[sample_start..sample_end];
+                                chunk.push(self.$convert_fn(sample_data));
+                                // Calculate timestamp for each sample (oldest sample gets earliest timestamp)
+                                timestamps.push(timestamp - (17 - sample_idx) as f64 * sample_interval);
+                            }
+                            outlet.push_chunk_stamped_ex(&chunk, &timestamps, true)?;
+                        }};
+                    }
+
                     if self.apply_conversion {
-                        let mut chunk: Vec<Vec<f32>> = Vec::with_capacity(18);
-                        let mut timestamps: Vec<f64> = Vec::with_capacity(18);
-                        for sample_idx in 0..18 {
-                            let sample_start = sample_idx * 38;
-                            let sample_end = sample_start + 38;
-                            let sample_data = &raw_samples[sample_start..sample_end];
-                            chunk.push(self.convert_data__f32(sample_data));
-                            // Calculate timestamp for each sample (oldest sample gets earliest timestamp)
-                            timestamps.push(timestamp - (17 - sample_idx) as f64 * sample_interval);
-                        }
-                        outlet.push_chunk_stamped_ex(&chunk, &timestamps, true)?;
+                        process_chunk!(f32, convert_data__f32);
                     } else {
-                        let mut chunk: Vec<Vec<i16>> = Vec::with_capacity(18);
-                        let mut timestamps: Vec<f64> = Vec::with_capacity(18);
-                        for sample_idx in 0..18 {
-                            let sample_start = sample_idx * 38;
-                            let sample_end = sample_start + 38;
-                            let sample_data = &raw_samples[sample_start..sample_end];
-                            chunk.push(self.convert_data__i16(sample_data));
-                            // Calculate timestamp for each sample (oldest sample gets earliest timestamp)
-                            timestamps.push(timestamp - (17 - sample_idx) as f64 * sample_interval);
-                        }
-                        outlet.push_chunk_stamped_ex(&chunk, &timestamps, true)?;
+                        process_chunk!(i16, convert_data__i16);
                     }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
