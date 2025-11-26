@@ -12,14 +12,14 @@
 //! - Builder pattern API for easy configuration
 //!
 //! ## Device Protocol
-//! The Muovi streams data in 18-sample chunks at 2kHz, with each sample containing
-//! 38 channels of 16-bit big-endian signed integers. Device control is performed
-//! via single-byte commands sent over the TCP connection.
+//! The Muovi streams data in 18-sample packets at 2kHz, with each sample containing
+//! 38 channels of 16-bit big-endian signed integers (1368 bytes per TCP packet).
+//! Device control is performed via single-byte commands sent over the TCP connection.
 //!
 //! For complete device documentation and specifications, see:
 //! <https://otbioelettronica.it/en/download/#55-171-wpfd-muovi>
 
-use byteorder::{BigEndian, ReadBytesExt};
+use byteorder::{BigEndian, ByteOrder};
 use chrono::Datelike;
 use clap::Parser;
 use lsl::ExPushable;
@@ -29,7 +29,7 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::time::{Duration, Instant};
 use thiserror::Error;
 
-const CONVERSION_FACTOR: f32 = 286.1e-9 / 1000.0; // 286.1 nV per bit to microvolts
+const CONVERSION_FACTOR: f32 = 286.1e-3; // 286.1 nV per bit = 0.2861 microvolts per bit (matches manufacturer's 0.000286 mV)
 
 #[derive(Error, Debug)]
 pub enum MuoviError {
@@ -83,9 +83,9 @@ struct Args {
 /// The `MuoviReader` handles the complete pipeline from device connection to LSL streaming:
 /// - Establishes TCP connection with configurable timeouts
 /// - Configures the device for EMG acquisition or test mode
-/// - Receives raw 16-bit ADC data in 18-sample chunks
+/// - Receives raw 16-bit ADC data in 18-sample packets (1368 bytes per TCP packet)
 /// - Converts to microvolts using device-specific calibration
-/// - Streams via LSL with proper channel metadata
+/// - Streams via LSL individually per sample with proper timestamps
 ///
 /// # Example
 /// ```no_run
@@ -106,10 +106,25 @@ pub struct MuoviReader {
     apply_conversion: bool,
     gain: u8,
     lsl_uuid: String,
+    // Preallocated buffers for allocation-free streaming
+    raw_samples: Vec<i16>,
+    chunk_f32: Vec<Vec<f32>>,
+    chunk_i16: Vec<Vec<i16>>,
+    timestamps: Vec<f64>,
+    timestamp_offsets: Vec<f64>,
 }
 
 impl Default for MuoviReader {
     fn default() -> Self {
+        const N_SAMPLES: usize = 18;
+        const N_CHANNELS: usize = 38;
+        const SAMPLE_INTERVAL: f64 = 1.0 / 2000.0;
+
+        // Precompute timestamp offsets (oldest sample has largest offset)
+        let timestamp_offsets: Vec<f64> = (0..N_SAMPLES)
+            .map(|i| (N_SAMPLES - 1 - i) as f64 * SAMPLE_INTERVAL)
+            .collect();
+
         Self {
             host: "0.0.0.0".to_string(),
             port: 54321,
@@ -119,6 +134,12 @@ impl Default for MuoviReader {
             apply_conversion: true,
             gain: 4,
             lsl_uuid: "muovi-180319".to_string(),
+            // Preallocate all buffers
+            raw_samples: vec![0i16; N_SAMPLES * N_CHANNELS],
+            chunk_f32: vec![vec![0.0f32; N_CHANNELS]; N_SAMPLES],
+            chunk_i16: vec![vec![0i16; N_CHANNELS]; N_SAMPLES],
+            timestamps: vec![0.0f64; N_SAMPLES],
+            timestamp_offsets,
         }
     }
 }
@@ -182,19 +203,31 @@ impl MuoviReader {
         }
     }
 
-    /// Converts raw 16-bit ADC values to microvolts using device calibration.
+    /// In-place conversion to microvolts - writes directly into preallocated output buffer.
     ///
-    /// Applies the conversion factor (286.1 nV/bit) and gain compensation.
-    fn convert_data__f32(&self, raw_data: &[i16]) -> Vec<f32> {
-        raw_data
-            .iter()
-            .map(|&x| x as f32 * CONVERSION_FACTOR * self.get_gain_factor())
-            .collect()
+    /// Applies the conversion factor (286.1 nV/bit) and gain compensation to the first 32 EMG channels.
+    /// The last 6 channels (4 IMU quaternion + 2 diagnostic) are kept as raw values.
+    /// This is optimized for high-performance streaming with zero allocations.
+    #[inline]
+    fn convert_data__f32_into(raw_data: &[i16], output: &mut [f32], gain_factor: f32) {
+        for (i, (&x, out)) in raw_data.iter().zip(output.iter_mut()).enumerate() {
+            *out = if i < 32 {
+                // Convert first 32 EMG channels to microvolts
+                x as f32 * CONVERSION_FACTOR * gain_factor
+            } else {
+                // Keep last 6 channels (IMU + diagnostic) as raw values
+                x as f32
+            };
+        }
     }
 
+    /// In-place copy of raw ADC values - writes directly into preallocated output buffer.
+    ///
     /// Returns raw ADC values without conversion (for dimensionless output).
-    fn convert_data__i16(&self, raw_data: &[i16]) -> Vec<i16> {
-        raw_data.to_vec()
+    /// This is optimized for high-performance streaming with zero allocations.
+    #[inline]
+    fn convert_data__i16_into(raw_data: &[i16], output: &mut [i16]) {
+        output.copy_from_slice(raw_data);
     }
 
     /// Creates LSL stream info with proper channel metadata.
@@ -230,7 +263,7 @@ impl MuoviReader {
         // First 32 channels are EMG
         for i in 0..32 {
             let mut ch: lsl::XMLElement = chns.append_child("channel");
-            ch.append_child_value("label", &format!("EMG_{}", i + 1));
+            ch.append_child_value("label", &format!("Ch {}", i + 1));
             ch.append_child_value(
                 "unit",
                 if self.apply_conversion {
@@ -243,7 +276,7 @@ impl MuoviReader {
         }
 
         // Channels 32-36 are IMU quaternion values
-        let imu_labels: [&'static str; 4] = ["QUAT_W", "QUAT_X", "QUAT_Y", "QUAT_Z"];
+        let imu_labels: [&'static str; 4] = ["Q W", "Q X", "Q Y", "Q Z"];
         for label in &imu_labels {
             let mut ch = chns.append_child("channel");
             ch.append_child_value("label", label);
@@ -254,7 +287,7 @@ impl MuoviReader {
         // Last 2 channels are diagnostic
         for i in 0..2 {
             let mut ch = chns.append_child("channel");
-            ch.append_child_value("label", &format!("DIAG_{}", i + 1));
+            ch.append_child_value("label", &format!("D {}", i + 1));
             ch.append_child_value("unit", "dimensionless");
             ch.append_child_value("type", "DIAGNOSTIC");
         }
@@ -302,6 +335,9 @@ impl MuoviReader {
                     // Set stream to blocking mode for data reception
                     stream.set_nonblocking(false)?;
 
+                    // Set TCP_NODELAY to disable Nagle's algorithm for low-latency streaming
+                    stream.set_nodelay(true)?;
+
                     // Set timeouts for data reception
                     stream.set_read_timeout(Some(Duration::from_secs(self.data_timeout__s)))?;
                     stream.set_write_timeout(Some(Duration::from_secs(self.data_timeout__s)))?;
@@ -324,7 +360,7 @@ impl MuoviReader {
 
     /// Sends device configuration command to start data acquisition.
     ///
-    /// Control byte format: [0][0][0][EMG][MODE1][MODE0][GO][STOP]
+    /// Control byte format: [0][0][0][0][EMG][MODE1][MODE0][GO/STOP]
     /// - EMG=1: Enable EMG channels
     /// - MODE: 00=gain8, 01=gain4, 11=test_ramps
     /// - GO=1: Start streaming
@@ -351,12 +387,16 @@ impl MuoviReader {
     /// 1. Waits for TCP connection from the Muovi device
     /// 2. Creates LSL outlet with proper channel metadata
     /// 3. Configures the device for data acquisition
-    /// 4. Continuously receives 18-sample chunks and streams via LSL
+    /// 4. Continuously receives 18-sample packets (1368 bytes) and streams each sample individually via LSL
     /// 5. Handles timeouts and connection errors gracefully
     ///
     /// The loop continues until the device disconnects or an error occurs.
+    /// Each sample receives its own timestamp based on the 2kHz sampling rate.
     /// Data is converted from raw ADC values to microvolts if conversion is enabled.
-    pub fn run(&self) -> Result<()> {
+    ///
+    /// Performance: This implementation uses preallocated buffers and in-place conversion
+    /// to eliminate all heap allocations in the hot loop, ensuring consistent low-latency streaming.
+    pub fn run(&mut self) -> Result<()> {
         let mut stream: TcpStream = self.wait_for_connection()?;
 
         let outlet: lsl::StreamOutlet =
@@ -364,7 +404,7 @@ impl MuoviReader {
 
         self.configure_device(&mut stream)?;
 
-        // Buffer for 18 samples of 38 channels (16-bit each)
+        // Buffer for 18 samples of 38 channels (16-bit each) = 1368 bytes per TCP packet
         let mut buffer: Vec<u8> = vec![0u8; 38 * 18 * 2];
 
         println!("Reading data... (Ctrl+C to stop)");
@@ -372,40 +412,33 @@ impl MuoviReader {
         loop {
             match stream.read_exact(&mut buffer) {
                 Ok(()) => {
-                    let timestamp: f64 = lsl::local_clock();
+                    // Capture timestamp immediately after receiving the packet
+                    let packet_timestamp: f64 = lsl::local_clock();
 
-                    // Convert bytes to 16-bit signed integers (big-endian)
-                    let mut raw_samples: Vec<i16> = Vec::with_capacity(18 * 38);
-                    let mut cursor: std::io::Cursor<&Vec<u8>> = std::io::Cursor::new(&buffer);
+                    // Bulk convert bytes to i16 (big-endian) - single efficient operation
+                    BigEndian::read_i16_into(&buffer, &mut self.raw_samples);
 
-                    for _ in 0..(18 * 38) {
-                        raw_samples.push(cursor.read_i16::<BigEndian>()?);
+                    // Fill timestamps using precomputed offsets
+                    for (i, &offset) in self.timestamp_offsets.iter().enumerate() {
+                        self.timestamps[i] = packet_timestamp - offset;
                     }
 
-                    // Reshape and convert data with individual timestamps
-                    // At 2kHz sampling rate, each sample is 0.5ms apart (1/2000 = 0.0005 seconds)
-                    let sample_interval = 1.0 / 2000.0;
-
-                    macro_rules! process_chunk {
-                        ($value_type:ty, $convert_fn:ident) => {{
-                            let mut chunk: Vec<Vec<$value_type>> = Vec::with_capacity(18);
-                            let mut timestamps: Vec<f64> = Vec::with_capacity(18);
-                            for sample_idx in 0..18 {
-                                let sample_start = sample_idx * 38;
-                                let sample_end = sample_start + 38;
-                                let sample_data = &raw_samples[sample_start..sample_end];
-                                chunk.push(self.$convert_fn(sample_data));
-                                // Calculate timestamp for each sample (oldest sample gets earliest timestamp)
-                                timestamps.push(timestamp - (17 - sample_idx) as f64 * sample_interval);
-                            }
-                            outlet.push_chunk_stamped_ex(&chunk, &timestamps, true)?;
-                        }};
-                    }
-
+                    // Convert and push data using preallocated buffers (no allocations)
                     if self.apply_conversion {
-                        process_chunk!(f32, convert_data__f32);
+                        let gain_factor = self.get_gain_factor();
+                        for (i, raw_sample) in self.raw_samples.chunks_exact(38).enumerate() {
+                            Self::convert_data__f32_into(
+                                raw_sample,
+                                &mut self.chunk_f32[i],
+                                gain_factor,
+                            );
+                        }
+                        outlet.push_chunk_stamped_ex(&self.chunk_f32, &self.timestamps, true)?;
                     } else {
-                        process_chunk!(i16, convert_data__i16);
+                        for (i, raw_sample) in self.raw_samples.chunks_exact(38).enumerate() {
+                            Self::convert_data__i16_into(raw_sample, &mut self.chunk_i16[i]);
+                        }
+                        outlet.push_chunk_stamped_ex(&self.chunk_i16, &self.timestamps, true)?;
                     }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
@@ -435,11 +468,16 @@ fn main() -> Result<()> {
         format!("2025-{}", current_year)
     };
 
-    println!("muovi-lsl-interface Copyright (C) {} Raul C. Sîmpetru", copyright_year);
+    println!(
+        "muovi-lsl-interface Copyright (C) {} Raul C. Sîmpetru",
+        copyright_year
+    );
     println!("This program comes with ABSOLUTELY NO WARRANTY; for details see");
     println!("https://www.gnu.org/licenses/gpl-3.0.html#license-text.");
     println!("This is free software, and you are welcome to redistribute it");
-    println!("under certain conditions; for details see https://www.gnu.org/licenses/gpl-3.0.html#license-text.");
+    println!(
+        "under certain conditions; for details see https://www.gnu.org/licenses/gpl-3.0.html#license-text."
+    );
     println!();
 
     let args = Args::parse();
@@ -450,7 +488,7 @@ fn main() -> Result<()> {
         std::process::exit(1);
     }
 
-    let reader = MuoviReader::new()
+    let mut reader = MuoviReader::new()
         .host(&args.host)
         .port(args.port)
         .connection_timeout(args.connection_timeout)
