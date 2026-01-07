@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-01-07
+
+### Added
+
+- **Optional timing feature**: New `timing` Cargo feature for performance profiling and benchmarking
+	- Compile with `cargo build --features timing` to enable detailed timing statistics
+	- Tracks per-packet timing for each stage of the processing pipeline:
+		- Network read latency
+		- Byte-to-i16 conversion time
+		- Timestamp calculation time
+		- Data conversion time (i16 to f32 with gain)
+		- LSL push latency
+		- Total loop time and overhead
+	- Prints averaged statistics every 1000 packets (~9 seconds at 2kHz)
+	- Zero runtime overhead when feature is disabled (all timing code compiles out)
+
+### Technical Details
+
+- Uses `#[cfg(feature = "timing")]` for conditional compilation
+- Timing measurements use `std::time::Instant` for microsecond precision
+- Statistics include cumulative averages for stable performance assessment
+
 ## [1.3.0] - 2025-11-26
 
 ### Changed

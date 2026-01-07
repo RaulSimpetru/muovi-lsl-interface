@@ -409,21 +409,58 @@ impl MuoviReader {
 
         println!("Reading data... (Ctrl+C to stop)");
 
+        #[cfg(feature = "timing")]
+        {
+            println!("Performance timing enabled");
+        }
+
+        // Timing statistics (only compiled when timing feature is enabled)
+        #[cfg(feature = "timing")]
+        let mut packet_count: u64 = 0;
+        #[cfg(feature = "timing")]
+        let mut total_read_us: f64 = 0.0;
+        #[cfg(feature = "timing")]
+        let mut total_convert_us: f64 = 0.0;
+        #[cfg(feature = "timing")]
+        let mut total_timestamp_us: f64 = 0.0;
+        #[cfg(feature = "timing")]
+        let mut total_data_conv_us: f64 = 0.0;
+        #[cfg(feature = "timing")]
+        let mut total_push_us: f64 = 0.0;
+        #[cfg(feature = "timing")]
+        let mut total_loop_us: f64 = 0.0;
+
         loop {
+            #[cfg(feature = "timing")]
+            let loop_start = Instant::now();
+
             match stream.read_exact(&mut buffer) {
                 Ok(()) => {
+                    #[cfg(feature = "timing")]
+                    let read_time = Instant::now();
+
                     // Capture timestamp immediately after receiving the packet
                     let packet_timestamp: f64 = lsl::local_clock();
 
                     // Bulk convert bytes to i16 (big-endian) - single efficient operation
+                    #[cfg(feature = "timing")]
+                    let convert_start = Instant::now();
                     BigEndian::read_i16_into(&buffer, &mut self.raw_samples);
+                    #[cfg(feature = "timing")]
+                    let convert_time = Instant::now();
 
                     // Fill timestamps using precomputed offsets
+                    #[cfg(feature = "timing")]
+                    let timestamp_start = Instant::now();
                     for (i, &offset) in self.timestamp_offsets.iter().enumerate() {
                         self.timestamps[i] = packet_timestamp - offset;
                     }
+                    #[cfg(feature = "timing")]
+                    let timestamp_time = Instant::now();
 
                     // Convert and push data using preallocated buffers (no allocations)
+                    #[cfg(feature = "timing")]
+                    let data_conv_start = Instant::now();
                     if self.apply_conversion {
                         let gain_factor = self.get_gain_factor();
                         for (i, raw_sample) in self.raw_samples.chunks_exact(38).enumerate() {
@@ -433,12 +470,71 @@ impl MuoviReader {
                                 gain_factor,
                             );
                         }
+                        #[cfg(feature = "timing")]
+                        let data_conv_time = Instant::now();
+
+                        #[cfg(feature = "timing")]
+                        let push_start = Instant::now();
                         outlet.push_chunk_stamped_ex(&self.chunk_f32, &self.timestamps, true)?;
+                        #[cfg(feature = "timing")]
+                        let push_time = Instant::now();
+
+                        #[cfg(feature = "timing")]
+                        {
+                            let data_conv_elapsed = data_conv_time.duration_since(data_conv_start).as_micros() as f64;
+                            let push_elapsed = push_time.duration_since(push_start).as_micros() as f64;
+                            total_data_conv_us += data_conv_elapsed;
+                            total_push_us += push_elapsed;
+                        }
                     } else {
                         for (i, raw_sample) in self.raw_samples.chunks_exact(38).enumerate() {
                             Self::convert_data__i16_into(raw_sample, &mut self.chunk_i16[i]);
                         }
+                        #[cfg(feature = "timing")]
+                        let data_conv_time = Instant::now();
+
+                        #[cfg(feature = "timing")]
+                        let push_start = Instant::now();
                         outlet.push_chunk_stamped_ex(&self.chunk_i16, &self.timestamps, true)?;
+                        #[cfg(feature = "timing")]
+                        let push_time = Instant::now();
+
+                        #[cfg(feature = "timing")]
+                        {
+                            let data_conv_elapsed = data_conv_time.duration_since(data_conv_start).as_micros() as f64;
+                            let push_elapsed = push_time.duration_since(push_start).as_micros() as f64;
+                            total_data_conv_us += data_conv_elapsed;
+                            total_push_us += push_elapsed;
+                        }
+                    }
+
+                    #[cfg(feature = "timing")]
+                    {
+                        let loop_end = Instant::now();
+
+                        let read_elapsed = read_time.duration_since(loop_start).as_micros() as f64;
+                        let convert_elapsed = convert_time.duration_since(convert_start).as_micros() as f64;
+                        let timestamp_elapsed = timestamp_time.duration_since(timestamp_start).as_micros() as f64;
+                        let loop_elapsed = loop_end.duration_since(loop_start).as_micros() as f64;
+
+                        total_read_us += read_elapsed;
+                        total_convert_us += convert_elapsed;
+                        total_timestamp_us += timestamp_elapsed;
+                        total_loop_us += loop_elapsed;
+                        packet_count += 1;
+
+                        // Print statistics every 1000 packets (every ~9 seconds at 2kHz)
+                        if packet_count % 1000 == 0 {
+                            println!("\n=== Performance Stats (avg over {} packets) ===", packet_count);
+                            println!("Network read:\t\t{:.2} µs", total_read_us / packet_count as f64);
+                            println!("Byte->i16 conversion:\t{:.2} µs", total_convert_us / packet_count as f64);
+                            println!("Timestamp calc:\t\t{:.2} µs", total_timestamp_us / packet_count as f64);
+                            println!("Data conversion:\t{:.2} µs", total_data_conv_us / packet_count as f64);
+                            println!("LSL push:\t\t{:.2} µs", total_push_us / packet_count as f64);
+                            println!("Total loop time:\t{:.2} µs", total_loop_us / packet_count as f64);
+                            println!("Overhead:\t\t{:.2} µs", (total_loop_us - total_read_us - total_convert_us - total_timestamp_us - total_data_conv_us - total_push_us) / packet_count as f64);
+                            println!("===============================================\n");
+                        }
                     }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
